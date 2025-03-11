@@ -75,6 +75,9 @@ jobs:
           echo "comment=$comment" >> $GITHUB_OUTPUT
           echo "✅ Successfully parsed AI response"
 
+      - name: Cleanup temporary files
+        run: rm -f ai_response.json
+
       - name: Apply changes and create PR
         id: pr
         run: |
