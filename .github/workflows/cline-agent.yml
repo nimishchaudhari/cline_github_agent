@@ -1,0 +1,78 @@
+name: Cline Agent
+
+on:
+  issue_comment:
+    types: [created]
+
+jobs:
+  handle_comment:
+    runs-on: ubuntu-latest
+    if: contains(github.event.comment.body, '@cline_agent')
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Get issue details
+        id: issue
+        uses: actions/github-script@v6
+        with:
+          script: |
+            const issue = await github.rest.issues.get({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number
+            });
+            core.setOutput('title', issue.data.title);
+            core.setOutput('body', issue.data.body);
+
+      - name: Send to AI agent
+        id: ai_response
+        env:
+          AI_AGENT_API: ${{ secrets.AI_AGENT_API }}
+        run: |
+          curl -X POST "$AI_AGENT_API" \
+            -H "Content-Type: application/json" \
+            -H "Authorization: Bearer ${{ secrets.AI_AGENT_TOKEN }}" \
+            -d '{
+              "repository": "${{ github.repository }}",
+              "issue_number": ${{ github.event.issue.number }},
+              "issue_title": "${{ steps.issue.outputs.title }}",
+              "issue_body": "${{ steps.issue.outputs.body }}",
+              "comment": "${{ github.event.comment.body }}",
+              "github_token": "${{ secrets.GITHUB_TOKEN }}"
+            }' > ai_response.json
+
+      - name: Parse AI response
+        id: parse
+        run: |
+          changes=$(jq -r '.changes' ai_response.json)
+          comment=$(jq -r '.comment' ai_response.json)
+          echo "changes=$changes" >> $GITHUB_OUTPUT
+          echo "comment=$comment" >> $GITHUB_OUTPUT
+
+      - name: Apply changes and create PR
+        id: pr
+        run: |
+          echo "${{ steps.parse.outputs.changes }}" | git apply
+          git checkout -b fix-issue-${{ github.event.issue.number }}
+          git add .
+          git commit -m "Fix issue #${{ github.event.issue.number }}"
+          git push origin fix-issue-${{ github.event.issue.number }}
+          pr_url=$(gh pr create --title "Fix issue #${{ github.event.issue.number }}" --body "Automated fix by Cline Agent")
+          echo "pr_url=$pr_url" >> $GITHUB_OUTPUT
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Comment on issue
+        uses: actions/github-script@v6
+        with:
+          script: |
+            const comment = `${{ steps.parse.outputs.comment }}\n\nPull Request: ${{ steps.pr.outputs.pr_url }}`;
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              body: comment
+            });
