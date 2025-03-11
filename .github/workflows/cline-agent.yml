@@ -32,36 +32,70 @@ jobs:
         env:
           AI_AGENT_API: ${{ secrets.AI_AGENT_API }}
         run: |
-          curl -X POST "$AI_AGENT_API" \
+          set -x
+          echo "🔄 Contacting AI agent API..."
+          trap "echo '❌ Failed to get AI response'; exit 1" ERR
+
+          curl -f -v -X POST "$AI_AGENT_API" \
             -H "Content-Type: application/json" \
             -H "Authorization: Bearer ${{ secrets.AI_AGENT_TOKEN }}" \
-            -d '{
-              "repository": "${{ github.repository }}",
-              "issue_number": ${{ github.event.issue.number }},
-              "issue_title": "${{ steps.issue.outputs.title }}",
-              "issue_body": "${{ steps.issue.outputs.body }}",
-              "comment": "${{ github.event.comment.body }}",
-              "github_token": "${{ secrets.GITHUB_TOKEN }}"
-            }' > ai_response.json
+            -d @- <<EOF > ai_response.json
+          {
+            "repository": "${{ github.repository }}",
+            "issue_number": ${{ github.event.issue.number }},
+            "issue_title": "${{ steps.issue.outputs.title }}",
+            "issue_body": "${{ steps.issue.outputs.body }}",
+            "comment": "${{ toJSON(github.event.comment.body) }}",
+            "github_token": "${{ secrets.GITHUB_TOKEN }}"
+          }
+          EOF
+
+          if [ ! -s ai_response.json ]; then
+            echo "❌ Empty response from AI API"
+            exit 1
+          fi
+          echo "✅ Received valid AI response"
 
       - name: Parse AI response
         id: parse
         run: |
-          changes=$(jq -r '.changes' ai_response.json)
-          comment=$(jq -r '.comment' ai_response.json)
+          set -e
+          echo "🔍 Parsing AI response..."
+          changes=$(jq -r '.changes' ai_response.json || {
+            echo "❌ Failed to parse changes from AI response";
+            jq . ai_response.json;
+            exit 1;
+          })
+          comment=$(jq -r '.comment' ai_response.json || {
+            echo "❌ Failed to parse comment from AI response";
+            jq . ai_response.json;
+            exit 1;
+          })
           echo "changes=$changes" >> $GITHUB_OUTPUT
           echo "comment=$comment" >> $GITHUB_OUTPUT
+          echo "✅ Successfully parsed AI response"
 
       - name: Apply changes and create PR
         id: pr
         run: |
-          echo "${{ steps.parse.outputs.changes }}" | git apply
+          set -ex
+          echo "🛠 Applying changes from AI..."
+          echo "${{ steps.parse.outputs.changes }}" | git apply -v || {
+            echo "❌ Failed to apply changes patch";
+            exit 1;
+          }
           git checkout -b fix-issue-${{ github.event.issue.number }}
           git add .
-          git commit -m "Fix issue #${{ github.event.issue.number }}"
+          git -c user.name="Cline Agent" -c user.email="agent@cline.com" commit -m "Fix issue #${{ github.event.issue.number }}"
           git push origin fix-issue-${{ github.event.issue.number }}
-          pr_url=$(gh pr create --title "Fix issue #${{ github.event.issue.number }}" --body "Automated fix by Cline Agent")
+
+          echo "📦 Creating pull request..."
+          pr_url=$(gh pr create --title "Fix issue #${{ github.event.issue.number }}" --body "Automated fix by Cline Agent") || {
+            echo "❌ Failed to create PR";
+            exit 1;
+          }
           echo "pr_url=$pr_url" >> $GITHUB_OUTPUT
+          echo "✅ PR created: $pr_url"
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
