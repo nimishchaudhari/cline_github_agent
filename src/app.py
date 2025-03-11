@@ -1,8 +1,8 @@
+import os
 from flask import Flask, request, jsonify
 import anthropic
 from github import Github
 import difflib
-import os
 import re
 
 app = Flask(__name__)
